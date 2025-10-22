@@ -21,27 +21,27 @@ def load_uv_ts(folder):
         depth = extract_depth(f)
         try:
             df = pd.read_csv(f)
-        except:
+        except Exception:
             continue
         df = df.rename(columns=lambda x: x.strip())
         if "Date" not in df.columns:
             continue
         df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
         df["Depth"] = depth
-        uv_list.append(df[["Date","Depth","u","v"]])
+        uv_list.append(df[["Date", "Depth", "u", "v"]])
 
     for f in files_ts:
         depth = extract_depth(f)
         try:
             df = pd.read_csv(f)
-        except:
+        except Exception:
             continue
         df = df.rename(columns=lambda x: x.strip())
         if "Date" not in df.columns:
             continue
         df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
         df["Depth"] = depth
-        ts_list.append(df[["Date","Depth","t","s"]])
+        ts_list.append(df[["Date", "Depth", "t", "s"]])
 
     uv_all = pd.concat(uv_list, ignore_index=True) if uv_list else pd.DataFrame()
     ts_all = pd.concat(ts_list, ignore_index=True) if ts_list else pd.DataFrame()
@@ -58,40 +58,70 @@ def load_uv_ts(folder):
         merged["t"] = np.nan
         merged["s"] = np.nan
     else:
-        merged = pd.merge(uv_all, ts_all, on=["Date","Depth"], how="outer")
+        merged = pd.merge(uv_all, ts_all, on=["Date", "Depth"], how="outer")
 
     merged["Date_JST"] = merged["Date"] + pd.Timedelta(hours=9)
-    merged = merged.sort_values(["Date_JST","Depth"]).reset_index(drop=True)
-    merged["Speed"] = np.sqrt(merged["u"].fillna(0)**2 + merged["v"].fillna(0)**2)
+    merged = merged.sort_values(["Date_JST", "Depth"]).reset_index(drop=True)
+
+    # 流速・流向
+    merged["Speed"] = np.sqrt(merged["u"].fillna(0) ** 2 + merged["v"].fillna(0) ** 2)  # m/s
     merged["Direction_deg"] = (np.degrees(np.arctan2(merged["u"].fillna(0), merged["v"].fillna(0))) + 360) % 360
     return merged
 
 # =========================================
-# SVG矢印生成関数
+# SVG矢印生成関数（ヘッド大きめ・縁取りなし・シャフト太め）
 # =========================================
-arrow_half_height = 6
+# ここでヘッド（矢じり）の大きさを比率で調整できます
+HEAD_LENGTH_RATIO = 0.50        # ヘッドの長さ（tipまで）の比率（0.40〜0.50あたりがバランス良）
+HEAD_HALF_HEIGHT_RATIO = 0.35   # ヘッドの高さ（半分）の比率（0.25〜0.35あたりが見やすい）
+SHAFT_WIDTH_PX = 3.5            # シャフトの線幅（px）
 
-def get_arrow_svg(direction, speed):
-    if np.isnan(speed) or np.isnan(direction):
+def get_arrow_style(speed_mps):
+    """
+    speed_mps: m/s（Speed列はm/s）
+    閾値(kt)：
+      - 1.0 kt 未満：青
+      - 1.0〜2.0 kt：黄色
+      - 2.0 kt より大きい：赤
+    矢印サイズ：18 / 22 / 26（任意）
+    """
+    if np.isnan(speed_mps):
+        return 18, "#CCCCCC"   # 欠損時はグレー
+    speed_kt = speed_mps * 1.94384
+    if speed_kt < 1.0:
+        return 18, "#0000FF"   # 青
+    elif speed_kt < 2.0:
+        return 22, "#FFC107"   # 黄（視認性高め）
+    else:
+        return 26, "#FF0000"   # 赤
+
+def get_arrow_svg(direction_deg, speed_mps):
+    if np.isnan(speed_mps) or np.isnan(direction_deg):
         return ""
-    css_angle = (direction - 90) % 360
-    size, color = get_arrow_style(speed)
-    line_end = size * 0.55
+    css_angle = (direction_deg - 90) % 360
+    size, color = get_arrow_style(speed_mps)
+
+    # ヘッドサイズを size に対する比率で決定
+    head_length = size * HEAD_LENGTH_RATIO           # ヘッドの水平長さ
+    head_half_h = size * HEAD_HALF_HEIGHT_RATIO      # ヘッドの縦半分の高さ
+
+    # シャフトの終点（ヘッドの開始位置）
+    line_end = size - head_length
+
     return f"""
     <svg width="{size}" height="{size}" style="transform: rotate({css_angle}deg);">
-        <line x1="4" y1="{size/2}" x2="{line_end}" y2="{size/2}" stroke="{color}" stroke-width="2"/>
-        <polygon points="{line_end},{size/2 - arrow_half_height} {size},{size/2} {line_end},{size/2 + arrow_half_height}" fill="{color}"/>
+        <!-- シャフト（後ろの線）：太め・端は丸 -->
+        <line x1="4" y1="{size/2}" x2="{line_end}" y2="{size/2}"
+              stroke="{color}" stroke-width="{SHAFT_WIDTH_PX}" stroke-linecap="round"/>
+        <!-- ヘッド（三角）：縁取りなし -->
+        <polygon points="{line_end},{size/2 - head_half_h} {size},{size/2} {line_end},{size/2 + head_half_h}"
+                 fill="{color}"/>
     </svg>
     """
 
-def get_arrow_style(speed):
-    if speed < 1.0:
-        return 18, "blue"
-    elif speed < 1.3:
-        return 22, "green"
-    else:
-        return 26, "red"
-
+# =========================================
+# 背景色（温度カラースケール）
+# =========================================
 def get_color(temp, t_min=5, t_max=25):
     if np.isnan(temp):
         return "rgba(220,220,220,0.6)"
@@ -163,26 +193,35 @@ else:
                 df_prev = merged_prev
 
         table_html = "<div style='max-height:80vh; overflow-x:auto; overflow-y:auto;'><table>"
+
         if mode_view == "週間（12時）":
             start_date = selected_date
             end_date = start_date + pd.Timedelta(days=6)
             df_period = merged_now[(merged_now["Date_day"] >= start_date) & (merged_now["Date_day"] <= end_date)]
             times = [f"{d.strftime('%m/%d')} 12:00" for d in pd.date_range(start_date, end_date)]
+            day_list = list(pd.date_range(start_date, end_date))
         else:
             df_period = merged_now[merged_now["Date_day"] == selected_date]
-            times = [t.strftime('%H:%M') for t in sorted(df_period["Date_JST"].dt.floor("h").unique())]
+            hours_list = sorted(df_period["Date_JST"].dt.floor("h").unique())
+            times = [t.strftime('%H:%M') for t in hours_list]
 
+        # ヘッダ行
         table_html += "<tr><th class='sticky-col'>水深</th>"
         for t in times:
             table_html += f"<th>{t}</th>"
         table_html += "</tr>"
 
+        # データ行
         for depth in depths:
             table_html += f"<tr><td class='sticky-col'>{depth}m</td>"
-            for idx, t in enumerate(times):
+            for idx in range(len(times)):
                 if mode_view == "週間（12時）":
-                    day = selected_date + pd.Timedelta(days=idx)
-                    row = df_period[(df_period["Date_day"] == day) & (df_period["Date_JST"].dt.hour == 12) & (df_period["Depth"] == depth)]
+                    day = day_list[idx]
+                    row = df_period[
+                        (df_period["Date_day"] == day.date()) &
+                        (df_period["Date_JST"].dt.hour == 12) &
+                        (df_period["Depth"] == depth)
+                    ]
                     prev_row = df_prev[
                         (df_prev["Date_JST"].dt.month == day.month) &
                         (df_prev["Date_JST"].dt.day == day.day) &
@@ -190,8 +229,11 @@ else:
                         (df_prev["Depth"] == depth)
                     ] if not df_prev.empty else pd.DataFrame()
                 else:
-                    time_obj = sorted(df_period["Date_JST"].dt.floor("h").unique())[idx]
-                    row = df_period[(df_period["Date_JST"].dt.floor("h") == time_obj) & (df_period["Depth"] == depth)]
+                    time_obj = hours_list[idx]
+                    row = df_period[
+                        (df_period["Date_JST"].dt.floor("h") == time_obj) &
+                        (df_period["Depth"] == depth)
+                    ]
                     prev_row = df_prev[
                         (df_prev["Date_JST"].dt.month == time_obj.month) &
                         (df_prev["Date_JST"].dt.day == time_obj.day) &
@@ -201,16 +243,21 @@ else:
 
                 if not row.empty:
                     temp = row["t"].values[0]
-                    speed = row["Speed"].values[0]
-                    speed_kt = f"{speed * 1.94384:.1f} kt" if not np.isnan(speed) else "-"
+                    speed_mps = row["Speed"].values[0]
+                    speed_kt_label = f"{speed_mps * 1.94384:.1f} kt" if not np.isnan(speed_mps) else "-"
                     direction = row["Direction_deg"].values[0]
-                    arrow_svg = get_arrow_svg(direction, speed)
-                    color = get_color(temp)
-                    cell_content = f"<div class='current-data'>{temp:.1f}°C<br>{speed_kt}<br>{arrow_svg}</div>"
-                    if not prev_row.empty:
+                    arrow_svg = get_arrow_svg(direction, speed_mps)
+                    bg_color = get_color(temp)
+
+                    cell_content = (
+                        f"<div class='current-data'>{temp:.1f}°C<br>{speed_kt_label}<br>{arrow_svg}</div>"
+                    )
+                    if not prev_row.empty and "t" in prev_row.columns:
                         prev_temp = prev_row.iloc[0]["t"]
-                        cell_content += f"<div class='prev-data'>({prev_temp:.1f}°C)</div>"
-                    cell = f"<td style='background-color:{color};'>{cell_content}</td>"
+                        if not np.isnan(prev_temp):
+                            cell_content += f"<div class='prev-data'>({prev_temp:.1f}°C)</div>"
+
+                    cell = f"<td style='background-color:{bg_color};'>{cell_content}</td>"
                 else:
                     cell = "<td>-</td>"
                 table_html += cell
