@@ -1,3 +1,4 @@
+
 # -*- coding: utf-8 -*-
 import os
 from typing import Optional, Tuple, Dict, List
@@ -7,23 +8,21 @@ import streamlit as st
 from streamlit.components.v1 import html as st_html
 import plotly.graph_objects as go
 import plotly.express as px
+from pathlib import Path
 
 # =========================================
 # 設定（フォルダ固定）
 # =========================================
-from pathlib import Path
-
 BASE_DIR = str(Path(__file__).parent.joinpath("data").resolve())
 PRED_DIR = "pred"
-OBS_DIR  = "obs"
-CORR_DIR = "corr" 
-
+OBS_DIR = "obs"
+CORR_DIR = "corr"
 
 # 固定パラメータ
 RECENT_DAYS = 7  # 直近8日（週間）
-OUTLIER_TH = 4.0  # 観測なし時: corr - pred の閾値
+OUTLIER_TH = 4.0      # 観測なし時: corr - pred の閾値
 OUTLIER_TH_OBS = 2.0  # 観測あり時: corr - obs の閾値
-OBS_MATCH_TOL_MIN = 60  # 観測近傍マージ許容（分）
+OBS_MATCH_TOL_MIN = 60   # 観測近傍マージ許容（分）
 CORR_MATCH_TOL_MIN = 60  # 補正近傍マージ許容（分）
 TEMP_MIN, TEMP_MAX = -2.0, 40.0
 PHYS_MIN, PHYS_MAX = -1.5, 35.0
@@ -35,18 +34,9 @@ DISPLAY_MODE = "arrow"
 def pjoin(*parts: str) -> str:
     return os.path.normpath(os.path.join(*parts))
 
-
 # =========================================
 # ユーティリティ
 # =========================================
-from pathlib import Path
-import os
-import numpy as np
-import pandas as pd
-import streamlit as st
-from typing import Optional, Tuple, List
-
-
 def _pick_series_corr_then_pred(g: pd.DataFrame) -> Optional[pd.Series]:
     """
     corr が列として存在し、かつ有効値が1つ以上あれば corr を採用。
@@ -89,7 +79,6 @@ def safe_merge_asof_by_depth_keep_left(
     """
     out_list: List[pd.DataFrame] = []
     left_depths = sorted(set(left["depth_m"].dropna().unique()))
-
     for d in left_depths:
         l = left[left["depth_m"] == d].sort_values("datetime")
         r = right[right["depth_m"] == d].sort_values("datetime")[["datetime", "depth_m"] + right_value_cols]
@@ -106,7 +95,6 @@ def safe_merge_asof_by_depth_keep_left(
                 tolerance=tolerance, direction="nearest", suffixes=suffixes
             )
             out_list.append(merged)
-
     if not out_list:
         out = left.copy()
         for c in right_value_cols:
@@ -141,7 +129,6 @@ def to_rgba(color: str, alpha: float = 0.18) -> str:
     if not isinstance(color, str) or not color:
         return f"rgba(0,150,0,{alpha})"
     c = color.strip().lower()
-
     if c.startswith("rgba(") and c.endswith(")"):
         try:
             nums = c[5:-1].split(",")
@@ -149,14 +136,12 @@ def to_rgba(color: str, alpha: float = 0.18) -> str:
             return f"rgba({r},{g},{b},{alpha})"
         except Exception:
             return f"rgba(0,150,0,{alpha})"
-
     if c.startswith("rgb(") and c.endswith(")"):
         try:
             r, g, b = [int(float(x)) for x in c[4:-1].split(",")[:3]]
             return f"rgba({r},{g},{b},{alpha})"
         except Exception:
             return f"rgba(0,150,0,{alpha})"
-
     if c.startswith("#"):
         h = c.lstrip("#")
         try:
@@ -169,10 +154,9 @@ def to_rgba(color: str, alpha: float = 0.18) -> str:
             return f"rgba({r},{g},{b},{alpha})"
         except Exception:
             return f"rgba(0,150,0,{alpha})"
-
     return c
 
-# ---- ここから：キャッシュ無効化のための「ファイル指紋」ユーティリティ ----
+# ---- キャッシュ無効化用：ファイル指紋 ----
 def file_fingerprint(path: str) -> str:
     """
     任意パスの存在/mtime/サイズを文字列化（キャッシュキー用）。
@@ -188,50 +172,18 @@ def file_fingerprint(path: str) -> str:
         return "exists"
 
 def obs_fingerprint(base_dir: str, obs_dir: str, filename: str) -> str:
-    """
-    OBS ファイルの指紋。load_obs_for(...) の第2引数 fp に渡すこと。
-    """
     path = os.path.normpath(os.path.join(base_dir, obs_dir, filename))
     return file_fingerprint(path)
-# ---- ここまで ----
 
+# =========================================
+# ローダ（fp をキーに追加）
+# =========================================
 @st.cache_data(show_spinner=False)
-def load_pred(filename: str) -> pd.DataFrame:
+def load_pred(filename: str, fp: str = "") -> pd.DataFrame:
     """
     予測（pred）CSV を読み込む。
-    ※ pred は削除される運用が少ないため、キャッシュキー拡張は現状不要。
-       変更検知が必要なら file_fingerprint を第2引数に増やす設計に合わせてください。
+    fp はキャッシュキー用（中身では使わない）。
     """
-    path = pjoin(BASE_DIR, PRED_DIR, filename)
-    if not os.path.exists(path):
-        return pd.DataFrame()
-    try:
-        df = pd.read_csv(path, encoding="utf-8")
-    except Exception:
-        return pd.DataFrame()
-
-    df.columns = [c.strip() for c in df.columns]
-    df["datetime"] = utc_to_jst_naive(df.get("Date"))
-    df["depth_m"]  = pd.to_numeric(df.get("Depth"), errors="coerce").round(0).astype("Int64")
-    df = df.rename(columns={"Temp": "pred_temp"})
-
-    if ("U" in df.columns) and ("V" in df.columns):
-        df["U"] = pd.to_numeric(df["U"], errors="coerce")
-        df["V"] = pd.to_numeric(df["V"], errors="coerce")
-        df["Speed"] = np.sqrt(np.square(df["U"]) + np.square(df["V"]))
-        df["Direction_deg"] = (np.degrees(np.arctan2(df["U"], df["V"])) + 360.0) % 360.0
-
-    df = df.dropna(subset=["datetime", "depth_m"]).copy()
-    df["date_day"] = df["datetime"].dt.date
-    return df
-
-
-# 1) 既存: file_fingerprint は実装済み。これを pred/corr 読み込みにも使う  ← 既にあります
-# def file_fingerprint(path: str) -> str: ...
-
-# 2) pred/corr/obs ローダのシグネチャを「fp」を受ける形に変更し、キーに混ぜる
-@st.cache_data(show_spinner=False)
-def load_pred(filename: str, fp: str | None = None) -> pd.DataFrame:
     path = pjoin(BASE_DIR, PRED_DIR, filename)
     if not os.path.exists(path):
         return pd.DataFrame()
@@ -253,7 +205,11 @@ def load_pred(filename: str, fp: str | None = None) -> pd.DataFrame:
     return df
 
 @st.cache_data(show_spinner=False)
-def load_corr_for(filename: str, fp: str | None = None) -> pd.DataFrame:
+def load_corr_for(filename: str, fp: str = "") -> pd.DataFrame:
+    """
+    補正（corr）CSV を読み込む（<name>_corr.csv）。
+    fp はキャッシュキー用（中身では使わない）。
+    """
     name, ext = os.path.splitext(filename)
     corr_filename = f"{name}_corr{ext}"
     path = pjoin(BASE_DIR, CORR_DIR, corr_filename)
@@ -266,29 +222,30 @@ def load_corr_for(filename: str, fp: str | None = None) -> pd.DataFrame:
     df.columns = [c.strip() for c in df.columns]
     df["datetime"] = jst_to_naive(df.get("Date"))
     df["depth_m"] = pd.to_numeric(df.get("Depth"), errors="coerce").round(0).astype("Int64")
-
     corr_col = _detect_column(df, ["corr", "temp"]) or ("CorrTemp" if "CorrTemp" in df.columns else None)
     if corr_col is None:
         corr_col = "Temp" if "Temp" in df.columns else None
     if corr_col is None:
         return pd.DataFrame()
-
-    low_col = _detect_column(df, ["corr", "low"]) or ("CorrLow" if "CorrLow" in df.columns else None)
+    low_col  = _detect_column(df, ["corr", "low"])  or ("CorrLow"  if "CorrLow"  in df.columns else None)
     high_col = _detect_column(df, ["corr", "high"]) or ("CorrHigh" if "CorrHigh" in df.columns else None)
     rename_map = {corr_col: "corr_temp"}
-    if low_col: rename_map[low_col] = "corr_low"
+    if low_col:  rename_map[low_col]  = "corr_low"
     if high_col: rename_map[high_col] = "corr_high"
     df = df.rename(columns=rename_map)
-
     keep = ["datetime", "depth_m", "corr_temp"]
-    if "corr_low" in df.columns: keep.append("corr_low")
+    if "corr_low" in df.columns:  keep.append("corr_low")
     if "corr_high" in df.columns: keep.append("corr_high")
     df = df[keep].dropna(subset=["datetime", "depth_m", "corr_temp"]).copy()
     df["date_day"] = df["datetime"].dt.date
     return df
 
 @st.cache_data(show_spinner=False)
-def load_obs_for(filename: str, fp: str | None = None) -> pd.DataFrame:
+def load_obs_for(filename: str, fp: str = "") -> pd.DataFrame:
+    """
+    観測（obs）CSV を読み込む。
+    fp はキャッシュキー用（中身では使わない）。
+    """
     path = pjoin(BASE_DIR, OBS_DIR, filename)
     if not os.path.exists(path):
         return pd.DataFrame()
@@ -303,7 +260,6 @@ def load_obs_for(filename: str, fp: str | None = None) -> pd.DataFrame:
     df = df.dropna(subset=["datetime", "depth_m"]).copy()
     df["date_day"] = df["datetime"].dt.date
     return df
-
 
 def add_corr(df_pred: pd.DataFrame, df_corr: pd.DataFrame) -> pd.DataFrame:
     """
@@ -322,9 +278,8 @@ def add_corr(df_pred: pd.DataFrame, df_corr: pd.DataFrame) -> pd.DataFrame:
         return out
 
     tol = pd.Timedelta(minutes=CORR_MATCH_TOL_MIN)
-
     right_cols = ["corr_temp"]
-    if "corr_low"  in df_corr.columns: right_cols.append("corr_low")
+    if "corr_low" in df_corr.columns: right_cols.append("corr_low")
     if "corr_high" in df_corr.columns: right_cols.append("corr_high")
 
     right = (
@@ -337,34 +292,42 @@ def add_corr(df_pred: pd.DataFrame, df_corr: pd.DataFrame) -> pd.DataFrame:
     )
     return merged
 
-
-# ---- 余白を詰めるグローバルCSSを注入（全画面に一度だけ）----
-
-from streamlit.components.v1 import html as st_html
-
+# ---- 余白圧縮CSS ----
 def inject_compact_css():
     compact_css = """
     <style>
-      /* ===== 1) ヘッダー/フッター/デプロイバッジを実質削除 ===== */
-      /* 新UI: アプリ上部のヘッダー */
-      [data-testid="stHeader"], header, .stAppHeader { display: none !important; height: 0 !important; }
-      /* フッター（Streamlitの著作権やバッジ） */
-      footer, #MainMenu, .viewerBadge_container__1QSob { display: none !important; }
-
-      /* ===== 2) ページ上下パディングを強めに圧縮 ===== */
-      .block-container {
-        padding-top: 2px !important;
-        padding-bottom: 2px !important;
-      }
-
-      /* ===== 3) 横並びブロック（segmented_control 周辺）のギャップ/余白を圧縮 ===== */
-      div[data-testid="stHorizontalBlock"] {
-        gap: 4px !important;
-        margin-top: 0 !important;
-        margin-bottom: 4px !important;
-      }
-
-      /* ===== 4) 主要ウィジェット上/下のマージンをさらに圧縮 ===== */
+    /* 1) ヘッダー/フッター/バッジ削除 */
+    [data-testid="stHeader"], header, .stAppHeader { display: none !important; height: 0 !important; }
+    footer, #MainMenu, .viewerBadge_container__1QSob { display: none !important; }
+    /* 2) ページ上下パディング圧縮 */
+    .block-container { padding-top: 2px !important; padding-bottom: 2px !important; }
+    /* 3) 横並びのギャップ圧縮 */
+    div[data-testid="stHorizontalBlock"] { gap: 4px !important; margin-top: 0 !important; margin-bottom: 4px !important; }
+    /* 4) ウィジェット上下マージン圧縮 */
+    div[data-testid="stSegmentedControl"],
+    div[data-testid="stRadio"],
+    div[data-testid="stSelectbox"],
+    div[data-testid="stDateInput"],
+    div[data-testid="stMultiSelect"],
+    div[data-testid="stSlider"],
+    div[data-testid="stNumberInput"] {
+      margin-top: 0 !important; margin-bottom: 4px !important;
+    }
+    /* 5) 縦積みギャップ圧縮 */
+    div[data-testid="stVerticalBlock"],
+    section[data-testid="stSidebar"] div[data-testid="stVerticalBlock"] {
+      gap: 4px !important;
+    }
+    /* 6) Markdownの行間調整 */
+    .stMarkdown p { margin: 1px 0 !important; line-height: 1.18 !important; }
+    .stMarkdown ul, .stMarkdown ol { margin-top: 1px !important; margin-bottom: 1px !important; }
+    .stMarkdown li { margin: 0 0 1px 0 !important; line-height: 1.18 !important; }
+    /* 7) カレンダーのセル余白を調整 */
+    .calendar-table th, .calendar-table td { padding: 3px 6px !important; }
+    /* 8) モバイル微調整 */
+    @media (max-width: 480px) {
+      .block-container { padding-top: 1px !important; padding-bottom: 1px !important; }
+      div[data-testid="stHorizontalBlock"] { gap: 3px !important; margin-top: 0 !important; margin-bottom: 3px !important; }
       div[data-testid="stSegmentedControl"],
       div[data-testid="stRadio"],
       div[data-testid="stSelectbox"],
@@ -372,40 +335,10 @@ def inject_compact_css():
       div[data-testid="stMultiSelect"],
       div[data-testid="stSlider"],
       div[data-testid="stNumberInput"] {
-        margin-top: 0 !important;
-        margin-bottom: 4px !important;
+        margin-top: 0 !important; margin-bottom: 3px !important;
       }
-
-      /* ===== 5) 縦積みブロック（本体/サイドバー）ギャップ縮小 ===== */
-      div[data-testid="stVerticalBlock"],
-      section[data-testid="stSidebar"] div[data-testid="stVerticalBlock"] {
-        gap: 4px !important;
-      }
-
-      /* ===== 6) Markdown（コメント）の行間/段落間をさらに詰める ===== */
-      .stMarkdown p { margin: 1px 0 !important; line-height: 1.18 !important; }
-      .stMarkdown ul, .stMarkdown ol { margin-top: 1px !important; margin-bottom: 1px !important; }
-      .stMarkdown li { margin: 0 0 1px 0 !important; line-height: 1.18 !important; }
-
-      /* ===== 7) あなたのカレンダー表のセル余白を縮める ===== */
-      .calendar-table th, .calendar-table td { padding: 3px 6px !important; }
-
-      /* ===== 8) モバイル幅でさらに圧縮 ===== */
-      @media (max-width: 480px) {
-        .block-container { padding-top: 1px !important; padding-bottom: 1px !important; }
-        div[data-testid="stHorizontalBlock"] { gap: 3px !important; margin-top: 0 !important; margin-bottom: 3px !important; }
-        div[data-testid="stSegmentedControl"],
-        div[data-testid="stRadio"],
-        div[data-testid="stSelectbox"],
-        div[data-testid="stDateInput"],
-        div[data-testid="stMultiSelect"],
-        div[data-testid="stSlider"],
-        div[data-testid="stNumberInput"] {
-          margin-top: 0 !important;
-          margin-bottom: 3px !important;
-        }
-        .stMarkdown p { line-height: 1.14 !important; }
-      }
+      .stMarkdown p { line-height: 1.14 !important; }
+    }
     </style>
     """
     st_html(compact_css, height=0)
@@ -454,15 +387,14 @@ def get_calendar_css(max_h_vh: int = 65) -> str:
     return f"""
     <style>
     .calendar-scroll-container {{
-      overflow-x: auto; overflow-y: auto;           /* 横／縦スクロール */
+      overflow-x: auto; overflow-y: auto;
       max-height: {max_h_vh}vh; max-width: 100%;
       -webkit-overflow-scrolling: touch;
       border: 1px solid #e5e5e5; border-radius: 8px;
-      isolation: isolate;                           /* z-indexの重なり安定化 */
+      isolation: isolate;
     }}
     .calendar-table {{
-      border-collapse: separate;                    /* ← stickyの安定化（Safari等） */
-      border-spacing: 0;
+      border-collapse: separate; border-spacing: 0;
       width: max-content; min-width: 640px; font-size: 14px;
     }}
     .calendar-table th, .calendar-table td {{
@@ -471,32 +403,20 @@ def get_calendar_css(max_h_vh: int = 65) -> str:
       text-align: center;
       white-space: nowrap;
     }}
-
-    /* 1行目（ヘッダ行）を上側に固定 */
-    .calendar-table thead th {{
+    thead th {{
       position: sticky; top: 0;
       background: #fafafa; z-index: 2;
     }}
-
-    /* 1列目（水深）を左側に固定（th/td両対応）＋中央＋太字 */
     .calendar-table tbody th.depth-cell,
     .calendar-table tbody td.depth-cell {{
       position: sticky; left: 0;
-      background: #f7f7f7;                           /* 背景必須（下のセルと重なるため） */
-      z-index: 3;                                    /* ヘッダより前面に */
-      min-width: 56px;
-      text-align: center;
-      font-weight: 700 !important;                   /* 太字を強制 */
+      background: #f7f7f7; z-index: 3;
+      min-width: 56px; text-align: center; font-weight: 700 !important;
     }}
-
-    /* thead の先頭セル（左上の角）も左固定にして重なりを整える */
-    .calendar-table thead th:first-child {{
+    thead th:first-child {{
       position: sticky; left: 0; top: 0;
-      background: #f0f0f0; z-index: 4;               /* 交点セルは最前面 */
-      min-width: 56px; text-align: center;
-      font-weight: 700;
+      background: #f0f0f0; z-index: 4; min-width: 56px; text-align: center; font-weight: 700;
     }}
-
     .calendar-table .pred-small {{ font-size: 12px; color: #555; }}
     </style>
     """.strip()
@@ -526,7 +446,6 @@ def render_cell_html(
     corr_ok = corr_on and correction_effective(temp_pred, temp_corr_raw, temp_obs=temp_obs)
     bg_value = float(temp_corr_raw) if corr_ok else (float(temp_pred) if temp_pred is not None else np.nan)
     bg_color = get_color(bg_value) if not pd.isna(bg_value) else "rgba(220,220,220,0.6)"
-
     pred_label = f"{float(temp_pred):.1f}°C" if (temp_pred is not None and not pd.isna(temp_pred)) else "NaN"
     pred_html = f"<span class='pred-small'>{pred_label}</span>"
 
@@ -559,7 +478,7 @@ def build_weekly_table_html(df_period: pd.DataFrame, day_list: List[pd.Timestamp
             if not g.empty:
                 target_dt = pd.Timestamp(day.date()) + pd.Timedelta(hours=12)
                 row = g.assign(_diff=(g["datetime"] - target_dt).abs()).sort_values("_diff").iloc[[0]]
-                temp_ark = row  # alias
+                temp_ark = row
                 temp_pred = float(temp_ark["pred_temp"].values[0]) if "pred_temp" in temp_ark.columns else np.nan
                 speed_val = float(temp_ark["Speed"].values[0]) if "Speed" in temp_ark.columns else np.nan
                 dir_val = float(temp_ark["Direction_deg"].values[0]) if "Direction_deg" in temp_ark.columns else np.nan
@@ -611,8 +530,6 @@ def make_layer_groups(depths: List[int]) -> Dict[str, List[int]]:
             mid = mid[c-1:c+1]
     return {"表層": top, "中層": mid, "底層": bot}
 
-
-
 def summarize_weekly_for_depth(layer_name: str, target_depth: int, df_period: pd.DataFrame) -> Optional[str]:
     """
     指定した 'target_depth' 1本だけで週間コメントを作る。
@@ -620,17 +537,13 @@ def summarize_weekly_for_depth(layer_name: str, target_depth: int, df_period: pd
     """
     if df_period.empty or "depth_m" not in df_period.columns:
         return None
-
     g = df_period[df_period["depth_m"] == int(target_depth)].sort_values("datetime")
     if g.empty:
         return None
-
-    # ✅ corr優先（有効値が無ければpredへフォールバック）
     series = _pick_series_corr_then_pred(g)
     if series is None:
         return None
 
-    # --- 日別中央値に集約してから判定・表示（週間＝最大7点） ---
     dfz = g.assign(val=pd.to_numeric(series, errors="coerce"))
     dfz = dfz[(dfz["val"] > PHYS_MIN) & (dfz["val"] < PHYS_MAX)].dropna(subset=["val"])
     if dfz.empty:
@@ -640,59 +553,50 @@ def summarize_weekly_for_depth(layer_name: str, target_depth: int, df_period: pd
 
     daily = (
         dfz.groupby("date_day", as_index=False)["val"]
-           .median()
-           .sort_values("date_day")
+        .median()
+        .sort_values("date_day")
     )
     temps = daily["val"]
     if temps.empty:
         return None
 
-    # しきい値
-    rng_th = float(RANGE_STABLE) if "RANGE_STABLE" in globals() else 0.6
-    dlt_th = float(DELTA_THRESH) if "DELTA_THRESH" in globals() else 0.3
+    rng_th = float(RANGE_STABLE)
+    dlt_th = float(DELTA_THRESH)
 
-    # 高水温（22℃単独。p80併用は後で容易に拡張可）
     t_min, t_max = float(temps.min()), float(temps.max())
     if t_max >= HIGH_TEMP_TH:
         tag = f":red[高水温]（{t_min:.1f}℃～{t_max:.1f}℃）"
         return f"**{layer_name}**： {int(target_depth)}m{tag}"
 
-    # まず週レンジで「安定」を早決
     weekly_range = t_max - t_min
     if weekly_range < rng_th:
-        # 既存仕様を踏襲（数値は簡潔に開始日の中央値）
         t_start = float(temps.iloc[0])
         tag = f"安定（{t_start:.1f}℃）"
         return f"**{layer_name}**： {int(target_depth)}m{tag}"
 
-    # 前半/後半の平均差（Day1–3 vs Day5–7相当：中央値系列なので素直に分割）
     n = len(temps)
     idx_first = [i for i in [0, 1, 2] if i < n]
-    idx_last  = [i for i in [4, 5, 6] if i < n]
+    idx_last = [i for i in [4, 5, 6] if i < n]
     first = temps.iloc[idx_first] if idx_first else temps.iloc[:max(1, n // 2)]
     last  = temps.iloc[idx_last]  if idx_last  else temps.iloc[max(1, n // 2):]
     delta = float(last.mean() - first.mean())
 
-    # 表示ペイロード（arrow / range の切替）
     first_mean = float(first.mean()); last_mean = float(last.mean())
     def payload_arrow() -> str: return f"{first_mean:.1f}℃→{last_mean:.1f}℃"
     def payload_range() -> str: return f"{t_min:.1f}–{t_max:.1f}℃"
     def payload() -> str: return payload_arrow() if DISPLAY_MODE == "arrow" else payload_range()
 
-    # 方向判定（従来どおり）
     if delta > +dlt_th:
         tag = f"上昇（{payload()}）"
     elif delta < -dlt_th:
         tag = f"下降（{payload()}）"
     else:
-        # タイブレーク：中央値系列の端点
         t_start = float(temps.iloc[0]); t_end = float(temps.iloc[-1])
         end_diff = t_end - t_start
         if abs(end_diff) >= dlt_th:
             tag = f"{'上昇' if end_diff > 0 else '下降'}（{payload()}）"
         else:
             tag = f"安定（{payload()}）"
-
     return f"**{layer_name}**： {int(target_depth)}m{tag}"
 
 def pick_shallow_mid_deep_min10_from_depths(depths: List[int]) -> List[int]:
@@ -709,45 +613,32 @@ def pick_shallow_mid_deep_min10_from_depths(depths: List[int]) -> List[int]:
     n = len(xs)
     if n <= 2:
         return xs
-
-    # 浅…10m以上の最小値を優先、無ければ最浅
     low_idx = 0
     for i, d in enumerate(xs):
         if d >= 10:
             low_idx = i
             break
-
     high_idx = n - 1
-    mid_idx = (low_idx + high_idx) // 2  # 偶数は下側
-
+    mid_idx = (low_idx + high_idx) // 2
     chosen = [xs[low_idx], xs[mid_idx], xs[high_idx]]
     return sorted(set(chosen))
-
-
 
 def summarize_weekly_layer_temp(layer_name: str, layer_depths: List[int], df_period: pd.DataFrame) -> Optional[str]:
     if not layer_depths or df_period.empty or "depth_m" not in df_period.columns:
         return None
-
     valid_depths = set(pd.to_numeric(df_period["depth_m"], errors="coerce").dropna().astype(int))
     depths_in_data = sorted(int(d) for d in layer_depths if int(d) in valid_depths)
     if not depths_in_data:
         return None
-
-    # レイヤー集合から「浅・中・深（10m起算）」の候補3本を抽出
     smd = pick_shallow_mid_deep_min10_from_depths(depths_in_data)
     if not smd:
         return None
-
-    # レイヤー名に応じて代表1本だけ選ぶ
     if layer_name == "表層":
-        target_depth = smd[0]                  # 浅（10m以上の最小が優先）
+        target_depth = smd[0]
     elif layer_name == "中層":
-        target_depth = smd[min(1, len(smd)-1)] # 中（候補が2以下でも破綻しない）
+        target_depth = smd[min(1, len(smd)-1)]
     else:
-        target_depth = smd[-1]                 # 底層＝深
-
-    # ✅ 判定・表示は for_depth に一本化（corr優先・日別中央値・arrow/range切替）
+        target_depth = smd[-1]
     return summarize_weekly_for_depth(layer_name, target_depth, df_period)
 
 def dir_to_8pt_jp(deg: float) -> str:
@@ -797,6 +688,7 @@ def summarize_daily_layer_flow(
         if d_txt or v_cls:
             rows.append((label, d_txt, v_cls))
     if not rows: return None
+
     segments: List[str] = []
     if merge_same_segments:
         bucket: Dict[Tuple[str, str], List[str]] = {}
@@ -812,23 +704,20 @@ def summarize_daily_layer_flow(
             segments.append(f"{lbl}（{inner}）")
     return f"**{layer_name}**： " + "／".join(segments)
 
-
+# =========================================
+# メインUI
+# =========================================
 inject_compact_css()
-
-# =========================================
-# メインUI：表示モード（ラベル非表示）
-# =========================================
 
 try:
     view_mode = st.segmented_control(
-        "",  # ← ラベル非表示
+        "",  # ラベル非表示
         options=["予測カレンダー", "水温グラフ"],
         default="予測カレンダー"
     )
 except Exception:
     view_mode = st.radio(
-        "",  # ← ラベル非表示
-        ["予測カレンダー", "水温グラフ"],
+        "", ["予測カレンダー", "水温グラフ"],
         index=0, horizontal=True, label_visibility="collapsed"
     )
 
@@ -837,31 +726,33 @@ pred_folder = pjoin(BASE_DIR, PRED_DIR)
 if not os.path.exists(pred_folder):
     st.error(f"フォルダが見つかりません: {pred_folder}")
     st.stop()
+
 pred_files = [f for f in os.listdir(pred_folder) if f.endswith(".csv")]
 if not pred_files:
     st.warning("pred に CSV がありません")
     st.stop()
+
 selected_file = st.selectbox(
-    "", sorted(pred_files), key="sel_pred_file", label_visibility="collapsed"  # ← ラベル非表示
+    "", sorted(pred_files), key="sel_pred_file", label_visibility="collapsed"
 )
 
 pred_path = pjoin(BASE_DIR, PRED_DIR, selected_file)
 corr_name, ext = os.path.splitext(selected_file)
 corr_path = pjoin(BASE_DIR, CORR_DIR, f"{corr_name}_corr{ext}")
-obs_path  = pjoin(BASE_DIR, OBS_DIR,  selected_file)
+obs_path = pjoin(BASE_DIR, OBS_DIR, selected_file)
 
+# 指紋（キャッシュキー）
 fp_pred = file_fingerprint(pred_path)
 fp_corr = file_fingerprint(corr_path)
 fp_obs  = file_fingerprint(obs_path)
-
 
 # =========================================
 # 予測カレンダー
 # =========================================
 if view_mode == "予測カレンダー":
-    df_pred = load_pred(selected_file)
-    df_corr = load_corr_for(selected_file)
-    df_obs = load_obs_for(selected_file)
+    df_pred = load_pred(selected_file, fp_pred)
+    df_corr = load_corr_for(selected_file, fp_corr)
+    df_obs  = load_obs_for(selected_file,  fp_obs)
     corr_available = not df_corr.empty
 
     if df_pred.empty:
@@ -873,26 +764,25 @@ if view_mode == "予測カレンダー":
     min_day = min(available_days) if available_days else latest_day
     max_day = max(available_days) if available_days else latest_day
 
-    # 表示期間（ラベル非表示）
     try:
         cal_choice = st.segmented_control(
-            "", options=["週間表示（昼頃）", "選択日（1時間毎）"], default="週間表示", key="cal_choice"  # ← ラベル非表示
+            "", options=["週間表示（昼頃）", "選択日（1時間毎）"], default="週間表示（昼頃）", key="cal_choice"
         )
     except Exception:
         cal_choice = st.radio(
             "", ["週間表示（昼頃）", "選択日（1時間毎）"],
-            index=0, horizontal=True, key="cal_choice_radio", label_visibility="collapsed"  # ← ラベル非表示
+            index=0, horizontal=True, key="cal_choice_radio", label_visibility="collapsed"
         )
 
     if cal_choice == "週間表示（昼頃）":
         selected_day = st.date_input(
-            "", value=max_day, min_value=min_day, max_value=max_day, key="week_base_day", label_visibility="collapsed"  # ← ラベル非表示
+            "", value=max_day, min_value=min_day, max_value=max_day, key="week_base_day", label_visibility="collapsed"
         )
         start_day = pd.Timestamp(selected_day) - pd.Timedelta(days=RECENT_DAYS - 1)
         end_day = pd.Timestamp(selected_day)
         day_list = list(pd.date_range(start_day, end_day, freq="D"))
-        df_period = df_pred[df_pred["date_day"].isin([d.date() for d in day_list])].copy()
 
+        df_period = df_pred[df_pred["date_day"].isin([d.date() for d in day_list])].copy()
         if corr_available:
             df_corr_period = df_corr[df_corr["date_day"].isin([d.date() for d in day_list])].copy()
             df_period = add_corr(df_period, df_corr_period)
@@ -906,45 +796,34 @@ if view_mode == "予測カレンダー":
             if "obs_temp" in merged.columns:
                 df_period = merged
 
-
-        # 週間コメント（各レイヤー＝1本だけ。浅=10m起算・中=中間・深=最深）
         depths_all = sorted([int(d) for d in df_pred["depth_m"].dropna().unique()])
         st.markdown(f"**{start_day:%m/%d}～{end_day:%m/%d}の推移**")
 
-        # 全体の水深集合から「浅・中・深（10m起算）」の3本を先に決める
-        reps = pick_shallow_mid_deep_min10_from_depths(depths_all)  # 既存関数を利用
-
-        # reps の並びは [浅, 中, 深]（候補が2以下でも破綻しないように扱う）
+        reps = pick_shallow_mid_deep_min10_from_depths(depths_all)
         mapping = []
-        if len(reps) >= 1:
-            mapping.append(("表層", reps[0]))                     # 浅（10m以上の最小が優先）
-        if len(reps) >= 2:
-            mapping.append(("中層", reps[min(1, len(reps)-1)]))    # 中（要素2なら reps[1]）
-        if len(reps) >= 3:
-            mapping.append(("底層", reps[-1]))                     # 深（最深）
+        if len(reps) >= 1: mapping.append(("表層", reps[0]))
+        if len(reps) >= 2: mapping.append(("中層", reps[min(1, len(reps)-1)]))
+        if len(reps) >= 3: mapping.append(("底層", reps[-1]))
 
         any_line = False
         for lname, depth_sel in mapping:
-            line = summarize_weekly_for_depth(lname, depth_sel, df_period)  # ← 新関数で1本だけ要約
+            line = summarize_weekly_for_depth(lname, depth_sel, df_period)
             if line:
                 any_line = True
                 st.markdown(line)
-
         if not any_line:
             st.caption("（特筆すべき変化はありません）")
-
 
         table_html = build_weekly_table_html(df_period, day_list, depths_all, corr_on=corr_available)
         styles = get_calendar_css(65)
         full_html = f"<!doctype html><html><head><meta charset='utf-8'>{styles}</head><body>{table_html}</body></html>"
         st_html(full_html, height=650, scrolling=True)
 
-    else:
+    else:  # 選択日（1時間毎）
         selected_day = st.date_input(
-            "", value=max_day, min_value=min_day, max_value=max_day, key="day_sel", label_visibility="collapsed"  # ← ラベル非表示
+            "", value=max_day, min_value=min_day, max_value=max_value, key="day_sel", label_visibility="collapsed"
         )
         df_day = df_pred[df_pred["date_day"] == selected_day].copy()
-
         if corr_available:
             df_corr_sel = df_corr[df_corr["date_day"] == selected_day].copy()
             df_day = add_corr(df_day, df_corr_sel)
@@ -961,6 +840,7 @@ if view_mode == "予測カレンダー":
         depths_all = sorted([int(d) for d in df_pred["depth_m"].dropna().unique()])
         st.markdown("**朝(4～6時)、昼(11～13時)、夕(16～18時)**")
         layers = make_layer_groups(depths_all)
+
         any_line = False
         for lname, ldepths in layers.items():
             line = summarize_daily_layer_flow(lname, ldepths, df_day)
@@ -979,9 +859,9 @@ if view_mode == "予測カレンダー":
 # 水温グラフ（凡例簡略化：補正・実測のみ表示）
 # =========================================
 elif view_mode == "水温グラフ":
-    df_pred = load_pred(selected_file)
-    df_corr = load_corr_for(selected_file)
-    df_obs = load_obs_for(selected_file)
+    df_pred = load_pred(selected_file, fp_pred)
+    df_corr = load_corr_for(selected_file, fp_corr)
+    df_obs  = load_obs_for(selected_file,  fp_obs)
     corr_available = not df_corr.empty
 
     if df_pred.empty:
@@ -990,11 +870,11 @@ elif view_mode == "水温グラフ":
 
     try:
         period_mode = st.segmented_control(
-            "", options=["直近1か月", "任意期間"], default="直近1か月", key="graph_period_mode"  # ← ラベル非表示
+            "", options=["直近1か月", "任意期間"], default="直近1か月", key="graph_period_mode"
         )
     except Exception:
         period_mode = st.radio(
-            "", ["直近1か月", "任意期間"], index=0, horizontal=True, key="graph_period_mode_radio", label_visibility="collapsed"  # ← ラベル非表示
+            "", ["直近1か月", "任意期間"], index=0, horizontal=True, key="graph_period_mode_radio", label_visibility="collapsed"
         )
 
     latest_dt = df_pred["datetime"].max()
@@ -1011,7 +891,7 @@ elif view_mode == "水温グラフ":
     else:
         start_default = max(min_day, max_day - pd.Timedelta(days=29))
         start_day, end_day = st.slider(
-            "", min_value=min_day, max_value=max_day, value=(start_default, max_day), key="graph_period_slider", label_visibility="collapsed"  # ← ラベル非表示
+            "", min_value=min_day, max_value=max_day, value=(start_default, max_day), key="graph_period_slider", label_visibility="collapsed"
         )
         title_suffix = f"（{start_day:%Y-%m-%d}〜{end_day:%Y-%m-%d}・時間別）"
 
@@ -1028,8 +908,7 @@ elif view_mode == "水温グラフ":
             .groupby("depth_m", group_keys=False)
             .apply(lambda g: (
                 g.drop(columns=["depth_m"]).set_index("datetime")
-                .resample("1H").median(numeric_only=True)
-                .interpolate(method="time", limit=2).reset_index()
+                .resample("1H").median(numeric_only=True).interpolate(method="time", limit=2).reset_index()
                 .assign(depth_m=int(g["depth_m"].iloc[0]))
             ))
         )
@@ -1037,22 +916,16 @@ elif view_mode == "水温グラフ":
         df_period["depth_m"] = pd.to_numeric(df_period["depth_m"], errors="coerce").round(0).astype("Int64")
 
     # OBS（近傍点）— 左を保持
-
-    # --- OBS の近傍マージ（期間内に 1 点でもあれば obs_available=True） ---
     merged_for_points = pd.DataFrame(columns=["datetime", "depth_m", "obs_temp"])
     if not df_obs.empty and not df_period.empty:
         df_obs_period = df_obs[(df_obs["date_day"] >= start_day) & (df_obs["date_day"] <= end_day)].copy()
         if not df_obs_period.empty:
             tol = pd.Timedelta(minutes=CORR_MATCH_TOL_MIN)
-            left  = df_period.sort_values(["depth_m","datetime"]).copy()
+            left = df_period.sort_values(["depth_m","datetime"]).copy()
             right = df_obs_period.sort_values(["depth_m","datetime"])[["datetime","depth_m","obs_temp"]].copy()
             merged_for_points = safe_merge_asof_by_depth_keep_left(
                 left=left, right=right, tolerance=tol, right_value_cols=["obs_temp"], suffixes=("","")
             )
-
-    # 期間内に実測が 1 点でもあるか
-    obs_available = (("obs_temp" in merged_for_points.columns)
-                     and (not merged_for_points.dropna(subset=["obs_temp"]).empty))
 
     # corr を1Hに整形（帯があれば一緒に）
     df_corr_period = pd.DataFrame()
@@ -1077,11 +950,7 @@ elif view_mode == "水温グラフ":
     fig = go.Figure()
     base_colors = px.colors.qualitative.Dark24
 
-    # pred 期間内に描画可能な全水深（整数）
-
-    # --- 3 層の候補集合 ---
     depths_pred_all = sorted(set(df_period["depth_m"].dropna().astype(int).tolist())) if not df_period.empty else []
-
     depths_with_corr = set()
     if not df_corr_period.empty and "depth_m" in df_corr_period.columns:
         depths_with_corr = set(pd.to_numeric(df_corr_period["depth_m"], errors="coerce").dropna().astype(int).unique())
@@ -1094,21 +963,20 @@ elif view_mode == "水温グラフ":
 
     both_corr_obs = sorted(depths_with_corr.intersection(depths_with_obs))
 
-    def pick_shallow_mid_deep_min10(cands: list[int], k: int = 3) -> list[int]:
+    def pick_shallow_mid_deep_min10(cands: List[int], k: int = 3) -> List[int]:
         if not cands:
             return []
         xs = sorted(set(int(d) for d in cands))
         n = len(xs)
         if n <= 2:
             return xs[:k]
-        # 浅＝10m以上の最小（無ければ最浅）
         low_idx = 0
         for i, d in enumerate(xs):
             if d >= 10:
                 low_idx = i
                 break
         high_idx = n - 1
-        mid_idx = (low_idx + high_idx) // 2  # 偶数は下側
+        mid_idx = (low_idx + high_idx) // 2
         idxs = [low_idx, mid_idx, high_idx]
         chosen = [xs[i] for i in sorted(set(idxs))]
         if len(chosen) < k:
@@ -1118,24 +986,18 @@ elif view_mode == "水温グラフ":
             chosen.extend(rest_sorted[:k - len(chosen)])
         return chosen[:k]
 
-    # --- 優先順：① corr+obs ≥3 → ② corr ≥3 → ③ pred 全体 ---
     if len(both_corr_obs) >= 3:
         default_depths = pick_shallow_mid_deep_min10(both_corr_obs, k=3)
     elif len(depths_with_corr) >= 3:
         default_depths = pick_shallow_mid_deep_min10(sorted(depths_with_corr), k=3)
     else:
         default_depths = pick_shallow_mid_deep_min10(depths_pred_all, k=3)
-
     if not default_depths:
         default_depths = depths_pred_all[: min(3, len(depths_pred_all))]
 
-
-
-    # ユーザー選択 UI（ラベル非表示のまま）
     selected_depths = st.multiselect(
         "", depths_pred_all, default=default_depths, key="graph_depths", label_visibility="collapsed"
     )
-
 
     def emphasize_color(hex_color: str) -> str:
         try:
@@ -1155,7 +1017,6 @@ elif view_mode == "水温グラフ":
         g_obs = merged_for_points[merged_for_points["depth_m"] == d] if ("depth_m" in merged_for_points.columns) else pd.DataFrame()
 
         if not g_corr.empty:
-            # 信頼帯 → 凡例非表示（fill は残す）
             if ("corr_low" in g_corr.columns) and ("corr_high" in g_corr.columns):
                 fig.add_trace(go.Scatter(
                     x=g_corr["datetime"], y=g_corr["corr_low"].clip(lower=TEMP_MIN, upper=TEMP_MAX),
@@ -1167,7 +1028,6 @@ elif view_mode == "水温グラフ":
                     fill='tonexty', fillcolor=to_rgba(corr_col, 0.18),
                     name=f"{d}m 信頼帯", legendgroup=lg, showlegend=False, hoverinfo="skip"
                 ))
-            # 補正 → 凡例表示
             y_corr = g_corr["corr_temp"].clip(lower=TEMP_MIN, upper=TEMP_MAX)
             fig.add_trace(go.Scatter(
                 x=g_corr["datetime"], y=y_corr, mode="lines",
@@ -1175,7 +1035,6 @@ elif view_mode == "水温グラフ":
                 line=dict(color=corr_col, width=3.0), opacity=1.0,
                 hovertemplate="%{x}<br>水深: " + f"{d}m" + "<br>補正水温: %{y:.2f} °C<extra></extra>"
             ))
-            # 予測（薄線）→ 凡例非表示
             if not g_pred.empty:
                 y_pred = g_pred["pred_temp"].astype(float).clip(lower=TEMP_MIN, upper=TEMP_MAX)
                 fig.add_trace(go.Scatter(
@@ -1184,7 +1043,6 @@ elif view_mode == "水温グラフ":
                     line=dict(color=base_col, width=1.2, dash="dot"), opacity=0.35,
                     hovertemplate="%{x}<br>水深: " + f"{d}m" + "<br>予測水温: %{y:.2f} °C<extra></extra>"
                 ))
-            # 実測 → 凡例表示
             if not g_obs.empty:
                 fig.add_trace(go.Scatter(
                     x=g_obs["datetime"], y=g_obs["obs_temp"], mode="markers",
@@ -1194,7 +1052,6 @@ elif view_mode == "水温グラフ":
                     hovertemplate="%{x}<br>水深: " + f"{d}m" + "<br>実測水温: %{y:.2f} °C<extra></extra>"
                 ))
         else:
-            # 補正が無い場合：予測（凡例表示）+ 実測（凡例表示）
             if not g_pred.empty:
                 x = g_pred["datetime"]; y_pred = g_pred["pred_temp"].astype(float)
                 fig.add_trace(go.Scatter(
