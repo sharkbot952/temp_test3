@@ -921,22 +921,26 @@ if view_mode == "ガイダンス":
                 df_period = merged
 
         depths_all = sorted([int(d) for d in df_pred["depth_m"].dropna().unique()])
-        st.markdown(f"**{start_day:%m/%d}～{end_day:%m/%d}の推移**")
 
-        reps = pick_shallow_mid_deep_min10_from_depths(depths_all)
-        mapping = []
-        if len(reps) >= 1: mapping.append(("表層", reps[0]))
-        if len(reps) >= 2: mapping.append(("中層", reps[min(1, len(reps)-1)]))
-        if len(reps) >= 3: mapping.append(("底層", reps[-1]))
+        with st.expander(f"コメント（{start_day:%m/%d}～{end_day:%m/%d}の推移）", expanded=False):
+            reps = pick_shallow_mid_deep_min10_from_depths(depths_all)
+            mapping = []
+            if len(reps) >= 1:
+                mapping.append(("表層", reps[0]))
+            if len(reps) >= 2:
+                mapping.append(("中層", reps[min(1, len(reps)-1)]))
+            if len(reps) >= 3:
+                mapping.append(("底層", reps[-1]))
 
-        any_line = False
-        for lname, depth_sel in mapping:
-            line = summarize_weekly_for_depth(lname, depth_sel, df_period)
-            if line:
-                any_line = True
-                st.markdown(line)
-        if not any_line:
-            st.caption("（特筆すべき変化はありません）")
+            any_line = False
+            for lname, depth_sel in mapping:
+                line = summarize_weekly_for_depth(lname, depth_sel, df_period)
+                if line:
+                    any_line = True
+                    st.markdown(line)
+
+    if not any_line:
+        st.caption("（特筆すべき変化はありません）")
 
         table_html = build_weekly_table_html(df_period, day_list, depths_all, corr_on=corr_available)
         styles = get_calendar_css(65)
@@ -978,17 +982,19 @@ if view_mode == "ガイダンス":
                 df_day = merged
 
         depths_all = sorted([int(d) for d in df_pred["depth_m"].dropna().unique()])
-        st.markdown("**朝(4～6時)、昼(11～13時)、夕(16～18時)**")
-        layers = make_layer_groups(depths_all)
 
-        any_line = False
-        for lname, ldepths in layers.items():
-            line = summarize_daily_layer_flow(lname, ldepths, df_day)
-            if line:
-                any_line = True
-                st.markdown(line)
-        if not any_line:
-            st.caption("（特筆すべき変化はありません）")
+        with st.expander("コメント（朝(4～6時)、昼(11～13時)、夕(16～18時)）", expanded=False):
+            layers = make_layer_groups(depths_all)
+
+            any_line = False
+            for lname, ldepths in layers.items():
+                line = summarize_daily_layer_flow(lname, ldepths, df_day)
+                if line:
+                    any_line = True
+                    st.markdown(line)
+
+    if not any_line:
+        st.caption("（特筆すべき変化はありません）")
 
         table_html = build_daily_table_html(df_day, depths_all, corr_on=corr_available)
         styles = get_calendar_css(65)
