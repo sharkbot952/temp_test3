@@ -899,10 +899,10 @@ if view_mode == "ガイダンス":
 
         if WEEK_WINDOW_FORWARD:
             start_day = pd.Timestamp(selected_day)
-            end_day   = start_day + pd.Timedelta(days=7)  
+            end_day   = start_day + pd.Timedelta(days=7)
         else:
             end_day   = pd.Timestamp(selected_day)
-            start_day = end_day - pd.Timedelta(days=7)    
+            start_day = end_day - pd.Timedelta(days=7)
 
         day_list = list(pd.date_range(start_day, end_day, freq="D"))
 
@@ -916,7 +916,12 @@ if view_mode == "ガイダンス":
             tol_obs = pd.Timedelta(minutes=OBS_MATCH_TOL_MIN)
             left = df_period.sort_values(["depth_m", "datetime"]).copy()
             right = df_obs_week.sort_values(["depth_m", "datetime"])[["datetime", "depth_m", "obs_temp"]].copy()
-            merged = safe_merge_asof_by_depth_keep_left(left, right, tolerance=tol_obs, right_value_cols=["obs_temp"], suffixes=("", ""))
+            merged = safe_merge_asof_by_depth_keep_left(
+                left, right,
+                tolerance=tol_obs,
+                right_value_cols=["obs_temp"],
+                suffixes=("", "")
+            )
             if "obs_temp" in merged.columns:
                 df_period = merged
 
@@ -939,15 +944,15 @@ if view_mode == "ガイダンス":
                     any_line = True
                     st.markdown(line)
 
-    if not any_line:
-        st.caption("（特筆すべき変化はありません）")
+            if not any_line:
+                st.caption("（特筆すべき変化はありません）")
 
         table_html = build_weekly_table_html(df_period, day_list, depths_all, corr_on=corr_available)
         styles = get_calendar_css(65)
         full_html = f"<!doctype html><html><head><meta charset='utf-8'>{styles}</head><body>{table_html}</body></html>"
         st_html(full_html, height=650, scrolling=True)
 
-    else:  
+    else:
         if "date_day" in df_pred.columns:
             _days = sorted(df_pred["date_day"].dropna().unique())
             if _days:
@@ -977,7 +982,12 @@ if view_mode == "ガイダンス":
             tol_obs = pd.Timedelta(minutes=OBS_MATCH_TOL_MIN)
             left = df_day.sort_values(["depth_m", "datetime"]).copy()
             right = df_obs_sel.sort_values(["depth_m", "datetime"])[["datetime", "depth_m", "obs_temp"]].copy()
-            merged = safe_merge_asof_by_depth_keep_left(left, right, tolerance=tol_obs, right_value_cols=["obs_temp"], suffixes=("", ""))
+            merged = safe_merge_asof_by_depth_keep_left(
+                left, right,
+                tolerance=tol_obs,
+                right_value_cols=["obs_temp"],
+                suffixes=("", "")
+            )
             if "obs_temp" in merged.columns:
                 df_day = merged
 
@@ -993,8 +1003,8 @@ if view_mode == "ガイダンス":
                     any_line = True
                     st.markdown(line)
 
-    if not any_line:
-        st.caption("（特筆すべき変化はありません）")
+            if not any_line:
+                st.caption("（特筆すべき変化はありません）")
 
         table_html = build_daily_table_html(df_day, depths_all, corr_on=corr_available)
         styles = get_calendar_css(65)
