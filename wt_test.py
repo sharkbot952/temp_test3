@@ -1686,17 +1686,42 @@ elif view_mode == "水温図":
         return d
 
     def _render_year_compare():
-        if corr_available:
+        # 年比較は、対象siteに補正値が有効に存在する場合は補正値をデフォルトにする。
+        # 補正値が無い、または年比較に使える年数が不足する場合は予測値に戻す。
+        def _yc_source_available(df_src: pd.DataFrame, value_col: str) -> bool:
+            if not (isinstance(df_src, pd.DataFrame) and not df_src.empty):
+                return False
+            if "datetime" not in df_src.columns or value_col not in df_src.columns:
+                return False
+            tmp = df_src[["datetime", value_col]].copy()
+            tmp["datetime"] = pd.to_datetime(tmp["datetime"], errors="coerce")
+            tmp[value_col] = pd.to_numeric(tmp[value_col], errors="coerce")
+            tmp = tmp.dropna(subset=["datetime", value_col])
+            if tmp.empty:
+                return False
+            return len(tmp["datetime"].dt.year.dropna().astype(int).unique()) >= 2
+
+        pred_yc_available = _yc_source_available(df_pred, "pred_temp")
+        corr_yc_available = _yc_source_available(df_corr, "corr_temp")
+
+        if corr_yc_available:
+            yc_options = ["pred", "corr"] if pred_yc_available else ["corr"]
+            default_yc_value = "corr"
+        else:
+            yc_options = ["pred"]
+            default_yc_value = "pred"
+
+        if len(yc_options) >= 2:
             year_compare_value = st.selectbox(
                 "年比較の対象",
-                options=["pred", "corr"],
+                options=yc_options,
                 format_func=lambda x: "予測値（pred）" if x == "pred" else "補正値（corr）",
-                index=0,
-                key="graph_year_compare_value",
+                index=yc_options.index(default_yc_value),
+                key="graph_year_compare_value_v2",
             )
         else:
-            year_compare_value = "pred"
-            st.caption("年比較の対象：予測値（pred）")
+            year_compare_value = yc_options[0]
+            st.caption("年比較の対象：補正値（corr）" if year_compare_value == "corr" else "年比較の対象：予測値（pred）")
 
         df_yc_src = df_corr if year_compare_value == "corr" else df_pred
         yc_value_col = "corr_temp" if year_compare_value == "corr" else "pred_temp"
