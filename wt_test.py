@@ -1831,7 +1831,7 @@ elif view_mode == "水温図":
             diff_mode = default_diff
             st.session_state["graph_diff_mode"] = diff_mode
 
-        tab_wt, tab_cum, tab_thr = st.tabs(["水温", "積算水温", "22℃基準"])
+        tab_wt, tab_year, tab_thr = st.tabs(["水温", "年比較", "22℃基準"])
         def _render_wt_contour(_contour_value: str):
             contour_value = _contour_value
             if graph_style == "折れ線":
@@ -2073,10 +2073,146 @@ elif view_mode == "水温図":
             st.plotly_chart(fig, use_container_width=True)
 
 
+        def _render_year_compare_contour():
+            if corr_available:
+                year_compare_value = st.selectbox(
+                    "年比較の対象",
+                    options=["pred", "corr"],
+                    format_func=lambda x: "予測値（pred）" if x == "pred" else "補正値（corr）",
+                    index=0,
+                    key="graph_year_compare_value_in_tab",
+                )
+            else:
+                year_compare_value = "pred"
+                st.caption("年比較の対象：予測値（pred）")
+
+            df_yc_src = df_corr if year_compare_value == "corr" else df_pred
+            yc_value_col = "corr_temp" if year_compare_value == "corr" else "pred_temp"
+            yc_value_label = "補正値（corr）" if year_compare_value == "corr" else "予測値（pred）"
+
+            if not (isinstance(df_yc_src, pd.DataFrame) and not df_yc_src.empty and "datetime" in df_yc_src.columns and yc_value_col in df_yc_src.columns):
+                st.warning("年比較に使えるデータがありません。")
+                return
+
+            _dt_all = pd.to_datetime(df_yc_src["datetime"], errors="coerce")
+            years_available = sorted(_dt_all.dropna().dt.year.unique().astype(int).tolist())
+            if len(years_available) < 2:
+                st.warning("年比較には2年以上のデータが必要です。")
+                return
+
+            col_y1, col_y2 = st.columns(2)
+            with col_y1:
+                base_year = st.selectbox("対象年", years_available, index=len(years_available)-1, key="graph_year_compare_base_in_tab")
+            comp_candidates = [y for y in years_available if int(y) != int(base_year)]
+            default_comp = comp_candidates[-1] if comp_candidates else years_available[0]
+            with col_y2:
+                comp_year = st.selectbox(
+                    "比較年", comp_candidates,
+                    index=comp_candidates.index(default_comp) if default_comp in comp_candidates else 0,
+                    key="graph_year_compare_comp_in_tab",
+                )
+
+            _src = df_yc_src.copy()
+            _src["datetime"] = pd.to_datetime(_src["datetime"], errors="coerce")
+            _src["date_day"] = _src["datetime"].dt.date
+            target_days = sorted(_src.loc[_src["datetime"].dt.year == int(base_year), "date_day"].dropna().unique())
+            if not target_days:
+                st.warning("対象年のデータがありません。")
+                return
+
+            yc_start_day = min(target_days)
+            yc_end_day = max(target_days)
+            st.caption(f"対象月日：{pd.Timestamp(yc_start_day):%m/%d}〜{pd.Timestamp(yc_end_day):%m/%d}（対象年の最新日まで）")
+
+            yc_freq = "1h" if st.session_state.get("graph_contour_agg", contour_agg) == "1時間" else "1D"
+
+            def _yc_md_filter(df: pd.DataFrame, year: int, start_day_yc, end_day_yc, value_col: str, out_col: str, freq: str) -> pd.DataFrame:
+                if df is None or df.empty or value_col not in df.columns:
+                    return pd.DataFrame(columns=["depth_m", "x_align", out_col])
+                d = df.copy()
+                d["datetime"] = pd.to_datetime(d["datetime"], errors="coerce")
+                d["depth_m"] = pd.to_numeric(d["depth_m"], errors="coerce").round(0).astype("Int64")
+                d[value_col] = pd.to_numeric(d[value_col], errors="coerce")
+                d = d.dropna(subset=["datetime", "depth_m", value_col]).copy()
+                d = d[d["datetime"].dt.year == int(year)].copy()
+                if d.empty:
+                    return pd.DataFrame(columns=["depth_m", "x_align", out_col])
+
+                start_md = int(pd.Timestamp(start_day_yc).month) * 100 + int(pd.Timestamp(start_day_yc).day)
+                end_md = int(pd.Timestamp(end_day_yc).month) * 100 + int(pd.Timestamp(end_day_yc).day)
+                d["md"] = d["datetime"].dt.month * 100 + d["datetime"].dt.day
+                if start_md <= end_md:
+                    d = d[(d["md"] >= start_md) & (d["md"] <= end_md)].copy()
+                else:
+                    d = d[(d["md"] >= start_md) | (d["md"] <= end_md)].copy()
+                if d.empty:
+                    return pd.DataFrame(columns=["depth_m", "x_align", out_col])
+
+                d["x_align"] = pd.to_datetime(dict(
+                    year=np.full(len(d), 2000),
+                    month=d["datetime"].dt.month,
+                    day=d["datetime"].dt.day,
+                    hour=d["datetime"].dt.hour,
+                    minute=d["datetime"].dt.minute,
+                    second=d["datetime"].dt.second,
+                ), errors="coerce")
+                d = d.dropna(subset=["x_align"]).copy()
+                d["x_align"] = d["x_align"].dt.floor(freq)
+                d = d.groupby(["depth_m", "x_align"], as_index=False)[value_col].mean().rename(columns={value_col: out_col})
+                return d
+
+            base_al = _yc_md_filter(df_yc_src, int(base_year), yc_start_day, yc_end_day, yc_value_col, "base", yc_freq)
+            comp_al = _yc_md_filter(df_yc_src, int(comp_year), yc_start_day, yc_end_day, yc_value_col, "comp", yc_freq)
+            yc = pd.merge(base_al, comp_al, on=["depth_m", "x_align"], how="inner")
+            if yc.empty:
+                st.warning("年比較できる共通データがありません。対象年・比較年を確認してください。")
+                return
+
+            yc["diff"] = yc["base"] - yc["comp"]
+            yc["depth_m"] = pd.to_numeric(yc["depth_m"], errors="coerce").round(0).astype("Int64")
+            yc = yc.dropna(subset=["depth_m", "x_align"]).copy()
+            depths_yc_all = sorted(yc["depth_m"].dropna().astype(int).unique().tolist())
+            if not depths_yc_all:
+                st.warning("年比較できる深度情報がありません。")
+                return
+
+            time_grid = pd.date_range(yc["x_align"].min(), yc["x_align"].max(), freq=yc_freq)
+            pv = yc.pivot_table(index="depth_m", columns="x_align", values="diff", aggfunc="mean").reindex(index=depths_yc_all, columns=time_grid)
+            z = pv.values
+            if z.size == 0 or not np.isfinite(np.nanmax(np.abs(z))):
+                st.warning("年比較コンターを表示できる値がありません。")
+                return
+
+            z_abs = float(np.nanmax(np.abs(z)))
+            if not np.isfinite(z_abs) or z_abs <= 0:
+                z_abs = 1.0
+            z_abs = max(0.5, min(10.0, float(np.ceil(z_abs * 2.0) / 2.0)))
+
+            fig = go.Figure()
+            fig.add_trace(go.Heatmap(
+                x=time_grid, y=depths_yc_all, z=z,
+                colorscale="RdBu_r", zmin=-z_abs, zmax=z_abs, zsmooth="best",
+                colorbar=dict(title="差分 ℃<br>対象−比較"),
+                hovertemplate="月日=%{x|%m-%d}<br>水深=%{y}m<br>差分=%{z:.2f} ℃<extra></extra>"
+            ))
+            fig.add_trace(go.Contour(
+                x=time_grid, y=depths_yc_all, z=z,
+                contours=dict(start=0, end=0, size=1, coloring="none"),
+                line=dict(color="rgba(0,0,0,0.45)", width=1.2), showscale=False,
+                hoverinfo="skip", name="差分0℃"
+            ))
+            fig.update_layout(
+                title={"text": f"{selected_file} 水温 年比較（{yc_value_label}・コンター差分：{int(base_year)}年 − {int(comp_year)}年）", "y": 0.98, "x": 0.01, "xanchor": "left", "font": {"size": 16}},
+                margin=dict(l=10, r=10, t=55, b=10), height=620, template="plotly_white"
+            )
+            fig.update_xaxes(type="date", title_text="月日", tickformat="%m-%d", tickfont=dict(size=11))
+            fig.update_yaxes(title_text="水深 (m)", autorange="reversed", tickfont=dict(size=11))
+            st.plotly_chart(fig, use_container_width=True)
+
         with tab_wt:
             _render_wt_contour("水温")
-        with tab_cum:
-            _render_wt_contour("積算水温")
+        with tab_year:
+            _render_year_compare_contour()
         with tab_thr:
             _render_wt_contour("22℃基準")
 
